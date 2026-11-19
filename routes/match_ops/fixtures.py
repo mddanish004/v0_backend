@@ -3,6 +3,7 @@ from models import Tournament, Team, Round, Match, Score, db, Player
 from . import match_ops_bp
 from sqlalchemy.orm import aliased
 import logging
+from outcomes import outcome_payload
 from .teams import generate_team_id, generate_phone_number, validate_player_data, generate_uuid, find_existing_player
 
 logger = logging.getLogger(__name__)
@@ -324,7 +325,8 @@ def get_pool_fixtures(pool_name):
                 },
                 'status': match.status,
                 'is_final': match.is_final,
-                'winner_team_id': match.winner_team_id
+                'winner_team_id': match.winner_team_id,
+                'outcome': outcome_payload(match)
             }
             fixtures.append(fixture)
 

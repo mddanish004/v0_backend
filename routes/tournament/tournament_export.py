@@ -2,6 +2,7 @@ from flask import request, jsonify, current_app, Response
 from models import Tournament, Team, Player, Match, Score, db
 from sqlalchemy import text
 from datetime import datetime
+from outcomes import get_handler
 import csv
 import io
 from . import tournament_bp
@@ -43,6 +44,10 @@ def export_tournament_csv():
         for match in matches:
             if not match.is_final:
                 continue  # Skip matches that are not finalized
+
+            # Outcomes such as walkovers did not produce rating-relevant play.
+            if not get_handler(match.outcome_type).include_in_rating_export:
+                continue
 
             # Fetch teams for each match
             team1 = Team.query.filter_by(team_id=match.team1_id).first()

@@ -1,5 +1,6 @@
 from flask import jsonify
 from models import Match, Score, Team, db
+from outcomes import tally_match
 
 def get_cumulative_points_for_round(tournament_id):
     try:
@@ -26,6 +27,15 @@ def get_cumulative_points_for_round(tournament_id):
             team1_score = next(s for s in match_scores if s.team_id == match.team1_id)
             team2_score = next(s for s in match_scores if s.team_id == match.team2_id)
 
+            tally = tally_match(
+                match.outcome_type,
+                match.team1_id,
+                match.team2_id,
+                team1_score.score,
+                team2_score.score,
+                match.winner_team_id
+            )
+
             # Initialize team stats if not already done
             for team_id in [match.team1_id, match.team2_id]:
                 if team_id not in team_stats:
@@ -35,12 +45,12 @@ def get_cumulative_points_for_round(tournament_id):
                     }
 
             # Update team1 stats
-            team_stats[match.team1_id]['total_points'] += team1_score.score
-            team_stats[match.team1_id]['points_difference'] += (team1_score.score - team2_score.score)
+            team_stats[match.team1_id]['total_points'] += tally.team1_points
+            team_stats[match.team1_id]['points_difference'] += (tally.team1_points - tally.team2_points)
 
             # Update team2 stats
-            team_stats[match.team2_id]['total_points'] += team2_score.score
-            team_stats[match.team2_id]['points_difference'] += (team2_score.score - team1_score.score)
+            team_stats[match.team2_id]['total_points'] += tally.team2_points
+            team_stats[match.team2_id]['points_difference'] += (tally.team2_points - tally.team1_points)
 
         # Convert to list format for response
         standings = []

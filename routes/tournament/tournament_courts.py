@@ -3,6 +3,7 @@ from models import Tournament, Match, Team, Player, db
 from sqlalchemy import or_
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from . import tournament_bp
+from outcomes import outcome_payload
 import time
 import json
 
@@ -380,7 +381,9 @@ def get_court_matches(tournament_id):
             },
             'court_number': match.court_number,
             'court_order': match.court_order,
-            'status': match.status
+            'status': match.status,
+            'winner_team_id': match.winner_team_id,
+            'outcome': outcome_payload(match)
         })
     
     return jsonify({

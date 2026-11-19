@@ -4,8 +4,9 @@ from models import Score, Match, db, Player, Team
 from . import score_bp
 from socket_instance import socketio
 from flask_cors import cross_origin
+from outcomes import get_handler, stored_outcome, outcome_payload
 
-def update_successor_match(successor_match_id, current_match_id, winning_team_id):
+def update_successor_match(successor_match_id, current_match_id, winning_team_id, commit=True):
     """Updates the successor match with the winning team"""
     try:
         successor_match = Match.query.get(successor_match_id)
@@ -36,7 +37,8 @@ def update_successor_match(successor_match_id, current_match_id, winning_team_id
             ]
             db.session.bulk_save_objects(scores)
             
-        db.session.commit()
+        if commit:
+            db.session.commit()
         
     except Exception as e:
         db.session.rollback()
@@ -71,6 +73,12 @@ def update_score():
         if not match:
             print(f"Match not found with id: {match_id}")
             return jsonify({'error': 'Match not found'}), 404
+
+        # Match outcomes such as walkovers have no scoreline to edit.
+        if not get_handler(match.outcome_type).scores_applicable:
+            return jsonify({
+                'error': f'Scores cannot be recorded for a {stored_outcome(match).lower()} match'
+            }), 409
 
         print(f"Found match with team1_id={match.team1_id}, team2_id={match.team2_id}")
 
@@ -113,13 +121,10 @@ def update_score():
         # Update match final status and winner if final is True
         if final:
             match.is_final = True
-            # Determine winner
-            if team1_score > team2_score:
-                match.winner_team_id = match.team1_id
-            elif team2_score > team1_score:
-                match.winner_team_id = match.team2_id
-            else:
-                match.winner_team_id = None  # Draw
+            # The outcome handler owns the "who wins" rule for scored matches.
+            match.winner_team_id = get_handler(match.outcome_type).winner_from_scores(
+                match.team1_id, match.team2_id, team1_score, team2_score
+            )
             print(f"Match finalized with winner_team_id: {match.winner_team_id}")
 
             if match.successor:
@@ -274,7 +279,8 @@ def get_match_score():
             },
             'status': match.status,
             'is_final': match.is_final,
-            'winner_team_id': match.winner_team_id
+            'winner_team_id': match.winner_team_id,
+            'outcome': outcome_payload(match)
         }
         
         return jsonify(response), 200

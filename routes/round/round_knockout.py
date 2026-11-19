@@ -1,6 +1,7 @@
 from flask import request, jsonify
 from models import db, Tournament, Match, Team, Score, Round
 from sqlalchemy import func
+from outcomes import tally_match
 from . import round_bp
 from flask_cors import cross_origin
 import csv
@@ -52,23 +53,32 @@ def get_pool_standings(tournament_id, round_id):
     for match in matches:
         team1_score = next((s.score for s in scores if s.match_id == match.id and s.team_id == match.team1_id), 0)
         team2_score = next((s.score for s in scores if s.match_id == match.id and s.team_id == match.team2_id), 0)
-        
+
+        tally = tally_match(
+            match.outcome_type,
+            match.team1_id,
+            match.team2_id,
+            team1_score,
+            team2_score,
+            match.winner_team_id
+        )
+
         if match.team1_id and match.team2_id:  # Only count completed matches
             pool = match.pool.strip()  # Clean pool name
             # Update team 1 stats
             if match.team1_id in pool_standings.get(pool, {}):
                 pool_standings[pool][match.team1_id]['matches_played'] += 1
-                pool_standings[pool][match.team1_id]['points_scored'] += team1_score
-                pool_standings[pool][match.team1_id]['points_against'] += team2_score
-                if team1_score > team2_score:
+                pool_standings[pool][match.team1_id]['points_scored'] += tally.team1_points
+                pool_standings[pool][match.team1_id]['points_against'] += tally.team2_points
+                if tally.winner_team_id == match.team1_id:
                     pool_standings[pool][match.team1_id]['matches_won'] += 1
                 
             # Update team 2 stats
             if match.team2_id in pool_standings.get(pool, {}):
                 pool_standings[pool][match.team2_id]['matches_played'] += 1
-                pool_standings[pool][match.team2_id]['points_scored'] += team2_score
-                pool_standings[pool][match.team2_id]['points_against'] += team1_score
-                if team2_score > team1_score:
+                pool_standings[pool][match.team2_id]['points_scored'] += tally.team2_points
+                pool_standings[pool][match.team2_id]['points_against'] += tally.team1_points
+                if tally.winner_team_id == match.team2_id:
                     pool_standings[pool][match.team2_id]['matches_won'] += 1
     
     return pool_standings

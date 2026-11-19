@@ -2,6 +2,11 @@ from flask import request, jsonify
 from models import Match, Team, Player, Tournament, Score, db, SuperTournament
 from sqlalchemy import or_
 from . import match_bp
+from outcomes import (
+    MatchOutcome, OutcomeError, declare_outcome, get_declarable_handler,
+    get_handler, outcome_payload, stored_outcome
+)
+from socket_instance import socketio
 
 @match_bp.route('/create-match', methods=['POST'])
 def create_match():
@@ -270,6 +275,12 @@ def update_match_status(match_id):
         if not match:
             return jsonify({'error': 'Match not found'}), 404
 
+        # A walkover owns its status; changing it would break the outcome.
+        if not get_handler(match.outcome_type).allows_status_update and new_status != match.status:
+            return jsonify({
+                'error': f'The status of a {stored_outcome(match).lower()} match cannot be changed'
+            }), 409
+
         # Update match status
         match.status = new_status
 
@@ -289,13 +300,106 @@ def update_match_status(match_id):
                 'court_number': match.court_number,
                 'pool': match.pool,
                 'team1_id': match.team1_id,
-                'team2_id': match.team2_id
+                'team2_id': match.team2_id,
+                'winner_team_id': match.winner_team_id,
+                'outcome': outcome_payload(match)
             }
         }), 200
 
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
+def _declare_outcome(match_id, outcome_value):
+    """One declaration flow for every declarable outcome.
+
+    Routes only choose the outcome; all rules live in outcomes.py.
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Request body must be a JSON object'}), 400
+
+    tournament_id = data.get('tournament_id')
+    winner_team_id = data.get('winner_team_id')
+    reason = data.get('reason')
+
+    if not tournament_id or not winner_team_id:
+        return jsonify({'error': 'tournament_id and winner_team_id are required'}), 400
+    if not isinstance(winner_team_id, str):
+        return jsonify({'error': 'winner_team_id must be a string'}), 400
+    if reason is not None:
+        if not isinstance(reason, str):
+            return jsonify({'error': 'reason must be a string'}), 400
+        reason = reason.strip() or None
+        if reason and len(reason) > 255:
+            return jsonify({'error': 'reason must be at most 255 characters'}), 400
+
+    try:
+        handler = get_declarable_handler(outcome_value)
+
+        # Lock the row so two concurrent declarations cannot both apply.
+        match = Match.query.filter_by(
+            id=match_id, tournament_id=tournament_id
+        ).with_for_update().first()
+        if not match:
+            return jsonify({'error': 'Match not found'}), 404
+
+        changed = declare_outcome(match, handler.outcome, winner_team_id, reason)
+        db.session.commit()
+        label = handler.display_name
+
+        # Only announce real changes; a repeated request is a no-op.
+        if changed:
+            socketio.emit('score_update', {
+                'message': f'{label} declared',
+                'match_id': match.id,
+                'team1_id': match.team1_id,
+                'team2_id': match.team2_id,
+                'is_final': match.is_final,
+                'winner_team_id': match.winner_team_id,
+                'outcome': outcome_payload(match),
+                'tournament_id': match.tournament_id
+            }, namespace='/scores')
+
+        return jsonify({
+            'message': f'{label} declared successfully' if changed else f'{label} already recorded',
+            'match': {
+                'id': match.id,
+                'match_name': match.match_name,
+                'status': match.status,
+                'is_final': match.is_final,
+                'court_number': match.court_number,
+                'pool': match.pool,
+                'team1_id': match.team1_id,
+                'team2_id': match.team2_id,
+                'winner_team_id': match.winner_team_id,
+                'successor': match.successor,
+                'outcome': outcome_payload(match)
+            }
+        }), 200
+
+    except OutcomeError as e:
+        db.session.rollback()
+        return jsonify({'error': e.message}), e.status_code
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@match_bp.route('/declare-walkover/<int:match_id>', methods=['POST'])
+def declare_walkover(match_id):
+    """Backwards-compatible shortcut for the walkover outcome."""
+    return _declare_outcome(match_id, MatchOutcome.WALKOVER)
+
+
+@match_bp.route('/declare-outcome/<int:match_id>', methods=['POST'])
+def declare_outcome_route(match_id):
+    """Generic declaration endpoint; works for any registered declarable outcome."""
+    data = request.get_json(silent=True)
+    outcome_value = data.get('outcome') if isinstance(data, dict) else None
+    if not outcome_value:
+        return jsonify({'error': 'outcome is required'}), 400
+    return _declare_outcome(match_id, outcome_value)
 
 def verify_player_checkins(match):
     """Helper function to verify all players are checked in"""

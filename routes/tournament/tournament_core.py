@@ -1,6 +1,7 @@
 from flask import request, jsonify, current_app, render_template
 from models import Tournament, Team, Player, Match, Score, Round, db, Season
 from sqlalchemy import text, or_, and_, func, case, distinct
+from outcomes import tally_match
 from . import tournament_bp
 
 @tournament_bp.route('/tournaments', methods=['POST'])
@@ -131,6 +132,8 @@ def show_standings(tournament_id):
             m.team2_id,
             m.round_id,
             m.pool,
+            m.outcome_type,
+            m.winner_team_id,
             s1.team_id as team1_id,
             s1.score as team1_score,
             s2.team_id as team2_id,
@@ -171,26 +174,32 @@ def show_standings(tournament_id):
         print(f"Team1 ({match.team1_id}): {match.team1_score}")
         print(f"Team2 ({match.team2_id}): {match.team2_score}")
         
-        # Add scores
-        team_scores[round_id][match.team1_id]['points_scored'] += match.team1_score
-        team_scores[round_id][match.team1_id]['points_lost'] += match.team2_score
-        team_scores[round_id][match.team2_id]['points_scored'] += match.team2_score
-        team_scores[round_id][match.team2_id]['points_lost'] += match.team1_score
-        
-        # Track match and determine winner
-        if match.team1_score == 0 and match.team2_score == 0:
+        # The outcome handler decides whether the match counts, who won and
+        # how many points each side scored (a walkover has no points).
+        tally = tally_match(
+            match.outcome_type,
+            match.team1_id,
+            match.team2_id,
+            match.team1_score,
+            match.team2_score,
+            match.winner_team_id
+        )
+
+        team_scores[round_id][match.team1_id]['points_scored'] += tally.team1_points
+        team_scores[round_id][match.team1_id]['points_lost'] += tally.team2_points
+        team_scores[round_id][match.team2_id]['points_scored'] += tally.team2_points
+        team_scores[round_id][match.team2_id]['points_lost'] += tally.team1_points
+
+        if not tally.counted:
             print("Match not played yet")
             continue
-            
+
         team_scores[round_id][match.team1_id]['matches'].add(match.match_id)
         team_scores[round_id][match.team2_id]['matches'].add(match.match_id)
-        
-        if match.team1_score > match.team2_score:
-            team_scores[round_id][match.team1_id]['matches_won'] += 1
-            print(f"Winner: Team {match.team1_id}")
-        elif match.team2_score > match.team1_score:
-            team_scores[round_id][match.team2_id]['matches_won'] += 1
-            print(f"Winner: Team {match.team2_id}")
+
+        if tally.winner_team_id:
+            team_scores[round_id][tally.winner_team_id]['matches_won'] += 1
+            print(f"Winner: Team {tally.winner_team_id}")
         else:
             print("Match tied or not completed")
 
@@ -305,6 +314,8 @@ def show_overall_standings(tournament_id):
             m.id as match_id,
             m.team1_id,
             m.team2_id,
+            m.outcome_type,
+            m.winner_team_id,
             s1.team_id as team1_id,
             s1.score as team1_score,
             s2.team_id as team2_id,
@@ -341,27 +352,32 @@ def show_overall_standings(tournament_id):
         print(f"Team1 ({match.team1_id}): {match.team1_score}")
         print(f"Team2 ({match.team2_id}): {match.team2_score}")
         
-        # Skip unplayed matches
-        if match.team1_score == 0 and match.team2_score == 0:
+        # The outcome handler decides whether the match counts, who won and
+        # how many points each side scored (a walkover has no points).
+        tally = tally_match(
+            match.outcome_type,
+            match.team1_id,
+            match.team2_id,
+            match.team1_score,
+            match.team2_score,
+            match.winner_team_id
+        )
+
+        team_scores[match.team1_id]['points_scored'] += tally.team1_points
+        team_scores[match.team1_id]['points_lost'] += tally.team2_points
+        team_scores[match.team2_id]['points_scored'] += tally.team2_points
+        team_scores[match.team2_id]['points_lost'] += tally.team1_points
+
+        if not tally.counted:
             print("Match not played yet")
             continue
-        
-        # Add scores
-        team_scores[match.team1_id]['points_scored'] += match.team1_score
-        team_scores[match.team1_id]['points_lost'] += match.team2_score
-        team_scores[match.team2_id]['points_scored'] += match.team2_score
-        team_scores[match.team2_id]['points_lost'] += match.team1_score
-        
-        # Track match and determine winner
+
         team_scores[match.team1_id]['matches'].add(match.match_id)
         team_scores[match.team2_id]['matches'].add(match.match_id)
-        
-        if match.team1_score > match.team2_score:
-            team_scores[match.team1_id]['matches_won'] += 1
-            print(f"Winner: Team {match.team1_id}")
-        elif match.team2_score > match.team1_score:
-            team_scores[match.team2_id]['matches_won'] += 1
-            print(f"Winner: Team {match.team2_id}")
+
+        if tally.winner_team_id:
+            team_scores[tally.winner_team_id]['matches_won'] += 1
+            print(f"Winner: Team {tally.winner_team_id}")
         else:
             print("Match tied or not completed")
 
@@ -504,6 +520,8 @@ def show_second_place_standings(tournament_id):
             m.team2_id,
             m.round_id,
             m.pool,
+            m.outcome_type,
+            m.winner_team_id,
             s1.team_id as team1_id,
             s1.score as team1_score,
             s2.team_id as team2_id,
@@ -546,26 +564,32 @@ def show_second_place_standings(tournament_id):
         print(f"Team1 ({match.team1_id}): {match.team1_score}")
         print(f"Team2 ({match.team2_id}): {match.team2_score}")
         
-        # Add scores
-        pool_scores[pool][match.team1_id]['points_scored'] += match.team1_score
-        pool_scores[pool][match.team1_id]['points_lost'] += match.team2_score
-        pool_scores[pool][match.team2_id]['points_scored'] += match.team2_score
-        pool_scores[pool][match.team2_id]['points_lost'] += match.team1_score
-        
-        # Track match and determine winner
-        if match.team1_score == 0 and match.team2_score == 0:
+        # The outcome handler decides whether the match counts, who won and
+        # how many points each side scored (a walkover has no points).
+        tally = tally_match(
+            match.outcome_type,
+            match.team1_id,
+            match.team2_id,
+            match.team1_score,
+            match.team2_score,
+            match.winner_team_id
+        )
+
+        pool_scores[pool][match.team1_id]['points_scored'] += tally.team1_points
+        pool_scores[pool][match.team1_id]['points_lost'] += tally.team2_points
+        pool_scores[pool][match.team2_id]['points_scored'] += tally.team2_points
+        pool_scores[pool][match.team2_id]['points_lost'] += tally.team1_points
+
+        if not tally.counted:
             print("Match not played yet")
             continue
-            
+
         pool_scores[pool][match.team1_id]['matches'].add(match.match_id)
         pool_scores[pool][match.team2_id]['matches'].add(match.match_id)
-        
-        if match.team1_score > match.team2_score:
-            pool_scores[pool][match.team1_id]['matches_won'] += 1
-            print(f"Winner: Team {match.team1_id}")
-        elif match.team2_score > match.team1_score:
-            pool_scores[pool][match.team2_id]['matches_won'] += 1
-            print(f"Winner: Team {match.team2_id}")
+
+        if tally.winner_team_id:
+            pool_scores[pool][tally.winner_team_id]['matches_won'] += 1
+            print(f"Winner: Team {tally.winner_team_id}")
         else:
             print("Match tied or not completed")
 

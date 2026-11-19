@@ -1,7 +1,21 @@
 from flask import request, jsonify
 from models import Tournament, Team, Player, Match, Score, Round, db
 from routes.tournament.tournament_core import show_standings
+from outcomes import tally_match
 from . import round_bp
+
+def _tally_from_score_rows(match, match_scores):
+    """Apply the match's outcome rules to the score rows that exist for it."""
+    team1_score = next((s.score for s in match_scores if s.team_id == match.team1_id), 0)
+    team2_score = next((s.score for s in match_scores if s.team_id == match.team2_id), 0)
+    return tally_match(
+        match.outcome_type,
+        match.team1_id,
+        match.team2_id,
+        team1_score,
+        team2_score,
+        match.winner_team_id
+    )
 
 def get_round_standings(tournament_id, round_id):
     """
@@ -29,7 +43,8 @@ def get_round_standings(tournament_id, round_id):
 
             # Get scores for this match
             match_scores = [s for s in scores if s.match_id == match.id]
-            
+            tally = _tally_from_score_rows(match, match_scores)
+
             for score in match_scores:
                 if score.team_id not in pool_standings[match.pool]:
                     team = Team.query.get(score.team_id)
@@ -45,7 +60,7 @@ def get_round_standings(tournament_id, round_id):
                     }
 
                 team_stats = pool_standings[match.pool][score.team_id]
-                team_stats['points_scored'] += score.score
+                team_stats['points_scored'] += tally.points_for(score.team_id, score.score)
                 team_stats['matches_played'].add(match.id)
 
                 # Find opponent's score
@@ -54,8 +69,8 @@ def get_round_standings(tournament_id, round_id):
                     None
                 )
                 if opponent_score:
-                    team_stats['points_lost'] += opponent_score.score
-                    if score.score > opponent_score.score:
+                    team_stats['points_lost'] += tally.points_for(opponent_score.team_id, opponent_score.score)
+                    if tally.winner_team_id == score.team_id:
                         team_stats['matches_won'] += 1
 
                 team_stats['total_scores'] = team_stats['matches_won']
